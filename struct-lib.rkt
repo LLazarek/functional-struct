@@ -4,7 +4,11 @@
          struct->list
          struct->constructor)
 
-(require (for-syntax syntax/parse racket/base))
+(require (for-syntax syntax/parse
+                     racket/base
+                     racket/struct-info
+                     racket/syntax))
+         
 
 ;; struct-type/c: (-> (listof any/c) (-> (listof procedure?)))
 
@@ -83,6 +87,12 @@
           this-values
           this-constructor)))
 
+(define-for-syntax (build-tmp-id name)
+  (datum->syntax
+   name
+   (gensym (syntax->datum name))))
+
+
 (define-for-syntax (build-id name kind)
   (λ (field-name)
     (cond [(equal? kind 'accessor)
@@ -109,23 +119,43 @@
                          (syntax->list #'(field-name ...)))]
                    [(mutator ...)
                     (map (build-id #'name 'mutator) 
-                             (syntax->list #'(field-name ...)))]
+                         (syntax->list #'(field-name ...)))]
                    [predicate ((build-id #'name 'predicate) #f)]
-                   [key (gensym (syntax->datum #'name))])
-     #`(begin
-         (define name
-           (make-struct 'key super '(field-name ...) mutable?))
+                   [key (gensym (syntax->datum #'name))]
+                   [tmp-id (build-tmp-id #'name)])
+       #`(begin
 
-         (define (predicate a-struct) ((first a-struct) 'key))
+           #;(define name
+             (make-struct 'key super '(field-name ...) mutable?))
 
-         (define (accessor a-struct) ((second a-struct) 'field-name))
-         ...
+           (define tmp-id
+             (make-struct 'key super '(field-name ...) mutable?))
 
-         #,(when (syntax->datum #'mutable?)
-              #`(begin
-                  (define (mutator a-struct v)
-                    ((third a-struct) 'field-name v))
-                  ...))))]))
+           
+           (define-match-expander name
+             (λ (stx)
+               (syntax-parse stx
+                 [(_ ~rest field-pat)
+                  #'(? predicate
+                       (app
+                        struct->list
+                        (list #,@#'field-pat)))]))
+             (λ (stx)
+               (syntax-parse stx
+                 [stx:id #'tmp-id]
+                 [(_ ~rest args)
+                  #`(tmp-id #,@#'args)])))           
+         
+           (define (predicate a-struct) ((first a-struct) 'key))
+
+           (define (accessor a-struct) ((second a-struct) 'field-name))
+           ...
+
+           #,(when (syntax->datum #'mutable?)
+               #`(begin
+                   (define (mutator a-struct v)
+                     ((third a-struct) 'field-name v))
+                   ...))))]))
 
 
 
@@ -137,7 +167,7 @@
      #'(struct/h name super (field-name ...) #f)]
     [(_ name:id (field-name:id ...) (~datum #:mutable))
      #'(struct/h name #f (field-name ...) #t)]
-   [(_ name:id super:expr (field-name:id ...) (~datum #:mutable))
+    [(_ name:id super:expr (field-name:id ...) (~datum #:mutable))
      #'(struct/h name super (field-name ...) #t)]))
 
 
@@ -156,10 +186,11 @@
   (new-struct s+foo boo (f1 f2))
   (new-struct m-s+foo m+boo (f1 f2))
   (new-struct m-s+m+foo m+boo (f1 f2) #:mutable)
+
   
 
   (check-equal?
-   (let ([an-instance (foo 1 3)])
+   (let ([an-instance (foo 42 3)])
      (foo-f2 an-instance))
    3
    "immutable struct construction and access")
@@ -168,12 +199,12 @@
    (foo 1)
    "immutable struct construction with missing field values")
   
-   (check-error?
-    (foo 1 2 3)
+  (check-error?
+   (foo 1 2 3)
    "immutable struct construction with extra field values")
 
 
- (check-equal?
+  (check-equal?
    (let ([an-instance (m+foo 1 3)])
      (m+foo-f2 an-instance))
    3
@@ -194,11 +225,11 @@
    "mutable struct construction, mutate and access unmutated field")
 
   (check-error?
-    (s+foo 1 2 3 4 5)
+   (s+foo 1 2 3 4 5)
    "immutable struct construction with super and extra field values")
 
   (check-error?
-    (s+foo 1 2 3)
+   (s+foo 1 2 3)
    "immutable struct construction with super and missing field values")
 
   (check-equal?
@@ -229,8 +260,8 @@
 
   (check-equal?
    (let ([an-instance (m-s+foo 1 2 3 4)])
-       (set-m+boo-b2! an-instance 42)
-       (struct->list an-instance))
+     (set-m+boo-b2! an-instance 42)
+     (struct->list an-instance))
    '(1 42 3 4)
    "mutable struct construction, super mutation and list conversion")
 
@@ -253,5 +284,19 @@
          (m-s+m+foo? an-instance)
          (boo? an-instance)
          (s+foo? an-instance)))
-   "mutable struct construction with super and failed predicate check"))
+   "mutable struct construction with super and failed predicate check")
+
+  (check-equal?
+   (let ([an-instance (m-s+foo 1 2 3 4)])
+     (set-m+boo-b2! an-instance 42)
+     (struct->list an-instance))
+   '(1 42 3 4)
+   "mutable struct construction, super mutation and list conversion")
+
+  (check-equal?
+   (let ([an-instance (m-s+foo 1 2 3 4)])
+     (match an-instance
+       [(m-s+foo x y z h) (list y z)]))
+   '(2 3)
+   "mutable struct construction and match"))
 
