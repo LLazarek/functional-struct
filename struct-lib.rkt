@@ -7,19 +7,40 @@
 (require (for-syntax syntax/parse
                      racket/base
                      racket/struct-info
-                     racket/syntax))
-         
+                     racket/syntax)
+         syntax/parse/define)
+
+;; todo: switch to use struct-info to get (struct-out ...) working.
 
 ;; struct-type/c: (-> (listof any/c) (-> (listof procedure?)))
 
-;; (-> struct-type/c (listof any/c)) 
+(define (struct->predicate an-instance)
+  (first an-instance))
+
+(define (struct->generic-accessor an-instance)
+  (second an-instance))
+
+(define (struct->generic-mutator an-instance)
+  (third an-instance))
+
+;; (-> struct-type/c (listof any/c))
 (define (struct->list an-instance)
   ((fourth an-instance)))
 
-;; (-> struct-type/c (-> (listof any/c) struct-type/c) 
+;; (-> struct-type/c (-> (listof any/c) struct-type/c)
 (define (struct->constructor an-instance)
   (fifth an-instance))
-  
+
+(define (struct->field-names an-instance)
+  (sixth an-instance))
+
+(define-simple-macro (struct-copy struct-name e [field:id new-field-v] ...)
+  (let ([v e]
+        [update-map (hash {~@ 'field new-field-v} ...)])
+    (apply struct-name
+           (for/list ([a-field (in-list (struct->field-names v))]
+                      [a-value (in-list (struct->list v))])
+             (hash-ref update-map a-field (thunk a-value))))))
 
 (define base-struct-instance
   (list
@@ -33,7 +54,8 @@
    (thunk empty)
    (λ field-values
      (error
-      (format "base struct constructor doesn't exist")))))
+      (format "base struct constructor doesn't exist")))
+   empty))
 
 ;; (-> symbol? (or/c struct-type/c #f) (listof symbol?) boolean?
 ;;     struct-type/c)
@@ -54,9 +76,10 @@
               (format
                "don't know what to do with these extra field values:~a"
                super-field-values))]))
-    (define super-predicate (first super-instance))
-    (define super-accessors (second super-instance))
-    (define super-mutators (third super-instance))
+    (define super-predicate (struct->predicate super-instance))
+    (define super-accessors (struct->generic-accessor super-instance))
+    (define super-mutators (struct->generic-mutator super-instance))
+    (define super-fields (struct->field-names super-instance))
     (define this-instance-contents
       (for/list ([field-name field-names]
                  [field-value this-field-values])
@@ -71,12 +94,12 @@
        field-name
        (thunk (super-accessors field-name))))
     (define (this-mutators field-name field-value)
-      (cond [(and (member field-name field-names) mutable?) 
+      (cond [(and (member field-name field-names) mutable?)
              (hash-set! this-instance field-name field-value)]
             [else (super-mutators field-name field-value)]))
     (define (this-values)
       (append
-       ((fourth super-instance))
+       (struct->list super-instance)
        (for/list ([field-name field-names])
          (hash-ref this-instance field-name))))
     (define this-constructor
@@ -85,7 +108,9 @@
           this-accessors
           this-mutators
           this-values
-          this-constructor)))
+          this-constructor
+          (append super-fields
+                  field-names))))
 
 (define-for-syntax (build-tmp-id name)
   (datum->syntax
@@ -109,16 +134,16 @@
            (datum->syntax
             name
             (string->symbol
-             (format "~a?" (syntax->datum name))))])))  
+             (format "~a?" (syntax->datum name))))])))
 
 (define-syntax (struct/h stx)
   (syntax-parse stx
     [(_ name:id super:expr (field-name:id ...) mutable?:expr)
      (with-syntax ([(accessor ...)
-                    (map (build-id #'name 'accessor) 
+                    (map (build-id #'name 'accessor)
                          (syntax->list #'(field-name ...)))]
                    [(mutator ...)
-                    (map (build-id #'name 'mutator) 
+                    (map (build-id #'name 'mutator)
                          (syntax->list #'(field-name ...)))]
                    [predicate ((build-id #'name 'predicate) #f)]
                    [key (gensym (syntax->datum #'name))]
@@ -131,24 +156,24 @@
            (define tmp-id
              (make-struct 'key super '(field-name ...) mutable?))
 
-           
+
            (define-match-expander name
              (λ (stx)
                (syntax-parse stx
-                 [(_ ~rest field-pat)
+                 [(_ field-pat (... ...))
                   #'(? predicate
                        (app
                         struct->list
-                        (list #,@#'field-pat)))]))
+                        (list field-pat (... ...))))]))
              (λ (stx)
                (syntax-parse stx
                  [stx:id #'tmp-id]
-                 [(_ ~rest args)
-                  #`(tmp-id #,@#'args)])))           
-         
-           (define (predicate a-struct) ((first a-struct) 'key))
+                 [(_ args (... ...))
+                  #`(tmp-id args (... ...))])))
 
-           (define (accessor a-struct) ((second a-struct) 'field-name))
+           (define (predicate a-struct) ((struct->predicate a-struct) 'key))
+
+           (define (accessor a-struct) ((struct->generic-accessor a-struct) 'field-name))
            ...
 
            #,(when (syntax->datum #'mutable?)
@@ -187,8 +212,6 @@
   (new-struct m-s+foo m+boo (f1 f2))
   (new-struct m-s+m+foo m+boo (f1 f2) #:mutable)
 
-  
-
   (check-equal?
    (let ([an-instance (foo 42 3)])
      (foo-f2 an-instance))
@@ -198,7 +221,7 @@
   (check-error?
    (foo 1)
    "immutable struct construction with missing field values")
-  
+
   (check-error?
    (foo 1 2 3)
    "immutable struct construction with extra field values")
@@ -298,5 +321,13 @@
      (match an-instance
        [(m-s+foo x y z h) (list y z)]))
    '(2 3)
-   "mutable struct construction and match"))
+   "mutable struct construction and match")
+
+  (check-equal? (let ([an-instance (m-s+foo 1 2 3 4)])
+                  (struct->list
+                   (struct-copy m-s+foo
+                                an-instance
+                                [f1 5]
+                                [b2 7])))
+                '(1 7 5 4)))
 
