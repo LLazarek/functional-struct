@@ -1,13 +1,15 @@
 #lang racket
 
-(provide new-struct
+(provide (rename-out [new-struct struct])
+         struct-copy
          struct->list
          struct->constructor)
 
 (require (for-syntax syntax/parse
                      racket/base
                      racket/struct-info
-                     racket/syntax)
+                     racket/syntax
+                     "util.rkt")
          syntax/parse/define)
 
 ;; todo: switch to use struct-info to get (struct-out ...) working.
@@ -111,30 +113,6 @@
           this-constructor
           (append super-fields
                   field-names))))
-
-(define-for-syntax (build-tmp-id name)
-  (datum->syntax
-   name
-   (gensym (syntax->datum name))))
-
-
-(define-for-syntax (build-id name kind)
-  (λ (field-name)
-    (cond [(equal? kind 'accessor)
-           (datum->syntax
-            name
-            (string->symbol
-             (format "~a-~a" (syntax->datum name) (syntax->datum field-name))))]
-          [(equal? kind 'mutator)
-           (datum->syntax
-            name
-            (string->symbol
-             (format "set-~a-~a!" (syntax->datum name) (syntax->datum field-name))))]
-          [(equal? kind 'predicate)
-           (datum->syntax
-            name
-            (string->symbol
-             (format "~a?" (syntax->datum name))))])))
 
 (define-syntax (struct/h stx)
   (syntax-parse stx
